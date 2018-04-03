@@ -1,0 +1,1 @@
+36 0 * * * /usr/local/sbin/acme.sh --cron --home "/var/db/acme/.acme.sh"

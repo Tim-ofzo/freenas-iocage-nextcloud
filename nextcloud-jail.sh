@@ -85,7 +85,7 @@ if [ -z $PORTS_PATH ]; then
   PORTS_PATH="${POOL_PATH}/portsnap"
 fi
 
-echo '{"pkgs":["nano","curl","sudo","apache24","mariadb101-server","redis","php72-ctype","php72-dom","php72-gd","php72-iconv","php72-json","php72-mbstring","php72-posix","php72-simplexml","php72-xmlreader","php72-xmlwriter","php72-zip","php72-zlib","php72-pdo_mysql","php72-hash","php72-xml","php72-session","php72-mysqli","php72-wddx","php72-xsl","php72-filter","php72-curl","php72-fileinfo","php72-bz2","php72-intl","php72-openssl","php72-ldap","php72-ftp","php72-imap","php72-exif","php72-gmp","php72-memcache","php72-opcache","php72-pcntl","php72","bash","p5-Locale-gettext","help2man","texinfo","m4","autoconf","socat","git"]}' > /tmp/pkg.json
+echo '{"pkgs":["nano","curl","sudo","acme.sh","apache24","mariadb101-server","redis","php72-ctype","php72-dom","php72-gd","php72-iconv","php72-json","php72-mbstring","php72-posix","php72-simplexml","php72-xmlreader","php72-xmlwriter","php72-zip","php72-zlib","php72-pdo_mysql","php72-hash","php72-xml","php72-session","php72-mysqli","php72-wddx","php72-xsl","php72-filter","php72-curl","php72-fileinfo","php72-bz2","php72-intl","php72-openssl","php72-ldap","php72-ftp","php72-imap","php72-exif","php72-gmp","php72-memcache","php72-opcache","php72-pcntl","php72","bash","p5-Locale-gettext","help2man","texinfo","m4","autoconf","socat","git"]}' > /tmp/pkg.json
 
 iocage create --name "${JAIL_NAME}" -p /tmp/pkg.json -r 11.1-RELEASE ip4_addr="${INTERFACE}|${JAIL_IP}/24" defaultrouter="${DEFAULT_GW_IP}" boot="on" host_hostname="${JAIL_NAME}" vnet="${VNET}"
 rm /tmp/pkg.json
@@ -121,13 +121,12 @@ iocage exec ${JAIL_NAME} mkdir -p /usr/local/etc/pki/tls/certs/
 iocage exec ${JAIL_NAME} mkdir -p /usr/local/etc/pki/tls/private/
 iocage exec ${JAIL_NAME} touch /usr/local/etc/pki/tls/private/privkey.pem
 iocage exec ${JAIL_NAME} chmod 600 /usr/local/etc/pki/tls/private/privkey.pem
-iocage exec ${JAIL_NAME} curl https://get.acme.sh -o /tmp/get-acme.sh
-iocage exec ${JAIL_NAME} sh /tmp/get-acme.sh
-iocage exec ${JAIL_NAME} rm /tmp/get-acme.sh
+iocage exec ${JAIL_NAME} pw groupadd certs
+iocage exec ${JAIL_NAME} pw groupmod certs -m acme
 
 # Issue certificate.  If standalone mode is selected, issue directly, otherwise call external script to issue cert via DNS validation
 if [ $STANDALONE_CERT -eq 1 ]; then
-  iocage exec ${JAIL_NAME} /root/.acme.sh/acme.sh --issue ${TEST_CERT} --home "/root/.acme.sh" --standalone -d ${HOST_NAME} -k 4096 --fullchain-file /usr/local/etc/pki/tls/certs/fullchain.pem --key-file /usr/local/etc/pki/tls/private/privkey.pem
+  iocage exec ${JAIL_NAME} acme.sh --issue ${TEST_CERT} --standalone -d ${HOST_NAME} -k 4096 --fullchain-file /usr/local/etc/pki/tls/certs/fullchain.pem --key-file /usr/local/etc/pki/tls/private/privkey.pem
 elif [ $DNS_CERT -eq 1 ]; then
   iocage exec ${JAIL_NAME} /mnt/configs/acme_dns_issue.sh
 fi
@@ -166,8 +165,19 @@ iocage exec ${JAIL_NAME} echo "Nextcloud Administrator password is ${ADMIN_PASSW
 
 # If standalone mode was used to issue certificate, reissue using webroot
 if [ $STANDALONE_CERT -eq 1 ]; then
-  iocage exec ${JAIL_NAME} /root/.acme.sh/acme.sh --issue ${TEST_CERT} --home "/root/.acme.sh" -d ${HOST_NAME} -w /usr/local/www/apache24/data/nextcloud -k 4096 --fullchain-file /usr/local/etc/pki/tls/certs/fullchain.pem --key-file /usr/local/etc/pki/tls/private/privkey.pem --reloadcmd "service apache24 reload"
+  iocage exec ${JAIL_NAME} acme.sh --issue ${TEST_CERT} -d ${HOST_NAME} -w /usr/local/www/apache24/data/nextcloud -k 4096 --fullchain-file /usr/local/etc/pki/tls/certs/fullchain.pem --key-file /usr/local/etc/pki/tls/private/privkey.pem --reloadcmd "service apache24 reload"
 fi
+
+# Make sure both www and acme users have access to the certificates. And configure auto restart of apache after certificate renewal.
+iocage exec ${JAIL_NAME} pw groupmod certs -M acme,www
+iocage exec ${JAIL_NAME} chown -R www:certs /usr/local/etc/pki/tls/private/privkey.pem
+iocage exec ${JAIL_NAME} chown -R www:certs /usr/local/etc/pki/tls/certs/fullchain.pem
+iocage exec ${JAIL_NAME} chmod -R 770 /usr/local/etc/pki/tls/private/privkey.pem
+iocage exec ${JAIL_NAME} chmod -R 770 /usr/local/etc/pki/tls/certs/fullchain.pem
+iocage exec ${JAIL_NAME} echo "acme ALL=(ALL) NOPASSWD: /usr/sbin/service apache24 reload" >> /usr/local/etc/sudoers
+iocage exec ${JAIL_NAME} acme.sh --installcert -d ${HOST_NAME} --key-file /usr/local/etc/pki/tls/private/privkey.pem --fullchain-file /usr/local/etc/pki/tls/certs/fullchain.pem --reloadcmd "sudo /usr/sbin/service apache24 reload"
+iocage exec ${JAIL_NAME} su -m acme -c "crontab /mnt/configs/acme-crontab"
+
 
 # CLI installation and configuration of Nextcloud
 iocage exec ${JAIL_NAME} touch /var/log/nextcloud.log
